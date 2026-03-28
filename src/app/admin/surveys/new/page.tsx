@@ -282,7 +282,7 @@ export default function NewSurveyPage() {
   const { fields, append, remove } = useFieldArray({control, name:'questions'});
 
   const onSubmit = async (data: any) => {
-    const dims = [...new Set(populationTargets.map((t:any)=>t.dimension))];
+    const dims = Array.from(new Set(populationTargets.map((t:any)=>t.dimension)));
     for (const dim of dims) {
       const sum = populationTargets.filter((t:any)=>t.dimension===dim).reduce((s:number,t:any)=>s+t.proportion,0);
       if (Math.abs(sum-1.0)>0.01) {
