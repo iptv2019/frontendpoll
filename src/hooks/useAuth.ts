@@ -15,8 +15,11 @@ export function useAuth() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const stored = localStorage.getItem('auth_user');
-    if (stored) setUser(JSON.parse(stored));
+    if (typeof window === 'undefined') return;
+    try {
+      const stored = localStorage.getItem('auth_user');
+      if (stored) setUser(JSON.parse(stored));
+    } catch {}
     setLoading(false);
   }, []);
 
