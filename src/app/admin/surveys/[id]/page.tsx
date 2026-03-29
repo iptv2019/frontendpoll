@@ -3,165 +3,228 @@
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { surveysApi, statsApi, exportApi } from '@/lib/api';
-import toast from 'react-hot-toast';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, LineChart, Line, Cell
 } from 'recharts';
-import {
-  ArrowLeft, Globe, Edit, Download, Play, RefreshCw,
-  Users, CheckCircle, TrendingUp, AlertTriangle, Clock,
-  BarChart3, FileText, Table, FileJson
-} from 'lucide-react';
+import { Globe, Edit, Download, Play, RefreshCw, Users, CheckCircle, Clock, AlertTriangle, FileText, Table, FileJson } from 'lucide-react';
 
-const COLORS = ['#4F46E5','#7C3AED','#2563EB','#0891B2','#059669','#D97706','#DC2626'];
+const API = 'https://pesquisas-backendd.onrender.com';
+const COLORS = ['#4F46E5','#0891b2','#16a34a','#d97706','#dc2626','#7c3aed','#db2777'];
+
+function tok() {
+  if (typeof window === 'undefined') return '';
+  return localStorage.getItem('auth_token') || '';
+}
+
+async function get(path: string) {
+  const r = await fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${tok()}` } });
+  return r.json();
+}
+
+async function post(path: string, body: any) {
+  const r = await fetch(`${API}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok()}` },
+    body: JSON.stringify(body)
+  });
+  return r.json();
+}
+
+function StatCard({ label, value, sub, color }: any) {
+  return (
+    <div style={{ background:'white', border:'1px solid #e5e7eb', borderRadius:10, padding:'16px 20px' }}>
+      <p style={{ fontSize:12, color:'#6b7280', margin:'0 0 4px' }}>{label}</p>
+      <p style={{ fontSize:24, fontWeight:'bold', color: color||'#111827', margin:0 }}>{value}</p>
+      {sub && <p style={{ fontSize:11, color:'#9ca3af', margin:'2px 0 0' }}>{sub}</p>}
+    </div>
+  );
+}
+
+function CandidateBar({ label, pct, rawPct, moe, color, rank }: any) {
+  const lower = Math.max(0, pct - moe);
+  const upper = Math.min(100, pct + moe);
+  return (
+    <div style={{ marginBottom:20 }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom:6 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+          <span style={{ width:24, height:24, borderRadius:'50%', background:color, display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:'bold', color:'white', flexShrink:0 }}>{rank}</span>
+          <span style={{ fontWeight:600, color:'#111827', fontSize:15 }}>{label}</span>
+        </div>
+        <div style={{ textAlign:'right' }}>
+          <span style={{ fontSize:22, fontWeight:'bold', color:'#111827' }}>{pct.toFixed(1)}%</span>
+          <span style={{ fontSize:12, color:'#6b7280', marginLeft:6 }}>±{moe.toFixed(1)}%</span>
+        </div>
+      </div>
+      <div style={{ position:'relative', height:32, background:'#f3f4f6', borderRadius:6 }}>
+        <div style={{ position:'absolute', top:0, left:0, height:'100%', width:`${rawPct}%`, background:'#e5e7eb', borderRadius:6 }} />
+        <div style={{ position:'absolute', top:0, left:0, height:'100%', width:`${pct}%`, background:color, borderRadius:6, opacity:0.9 }} />
+        <div style={{ position:'absolute', top:'25%', height:'50%', left:`${lower}%`, width:`${upper-lower}%`, background:'rgba(0,0,0,0.15)', borderRadius:2 }} />
+      </div>
+      <div style={{ display:'flex', justifyContent:'space-between', marginTop:4 }}>
+        <span style={{ fontSize:11, color:'#9ca3af' }}>IC 95%: {lower.toFixed(1)}% – {upper.toFixed(1)}%</span>
+        <span style={{ fontSize:11, color:'#9ca3af' }}>Bruto: {rawPct.toFixed(1)}% · Pond.: {pct.toFixed(1)}%</span>
+      </div>
+    </div>
+  );
+}
 
 export default function SurveyDetailPage() {
   const { id } = useParams() as { id: string };
   const router = useRouter();
-  const [survey, setSurvey] = useState<any>(null);
+
+  const [survey, setSurvey]       = useState<any>(null);
   const [dashboard, setDashboard] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
-  const [runningWeight, setRunningWeight] = useState(false);
-  const [activeTab, setActiveTab] = useState<'overview'|'questions'|'weighting'>('overview');
+  const [weightedResults, setWeightedResults] = useState<any[]>([]);
+  const [loading, setLoading]     = useState(true);
+  const [running, setRunning]     = useState(false);
+  const [tab, setTab]             = useState<'overview'|'results'|'weighting'>('overview');
+  const [msg, setMsg]             = useState('');
+  const [msgType, setMsgType]     = useState<'ok'|'err'>('ok');
 
-  useEffect(() => {
-    Promise.all([surveysApi.get(id), statsApi.dashboard(id)])
-      .then(([s, d]) => { setSurvey(s.data); setDashboard(d.data); })
-      .catch(() => toast.error('Erro ao carregar dados'))
-      .finally(() => setLoading(false));
-  }, [id]);
-
-  const handleRunWeighting = async () => {
-    setRunningWeight(true);
+  const load = async () => {
+    setLoading(true);
     try {
-      const { data } = await statsApi.runWeighting(id, {
-        max_iterations: 100, convergence_tol: 0.001, weight_trim_max: 5.0
-      });
-      toast.success(
-        data.converged
-          ? `✅ Raking convergiu em ${data.iterations_used} iterações!`
-          : `⚠️ Raking concluído (não convergiu) — ${data.iterations_used} iterações`
+      const [s, d] = await Promise.all([get(`/api/surveys/${id}`), get(`/api/stats/${id}/dashboard`)]);
+      setSurvey(s);
+      setDashboard(d);
+
+      // Buscar resultados ponderados para perguntas de escolha
+      const choiceQs = (s.questions || []).filter((q: any) =>
+        ['single_choice','multiple_choice'].includes(q.type) && !q.demographic_key
       );
-      const d = await statsApi.dashboard(id);
-      setDashboard(d.data);
-    } catch (err: any) {
-      toast.error(err.response?.data?.error || 'Erro ao executar ponderação.');
-    } finally {
-      setRunningWeight(false);
+      const allQs = (s.questions || []).filter((q: any) =>
+        ['single_choice','multiple_choice'].includes(q.type)
+      );
+
+      const res = await Promise.all(
+        allQs.map((q: any) =>
+          get(`/api/stats/${id}/question/${q.id}/weighted`)
+            .then((r: any) => ({ question: q, data: r }))
+            .catch(() => ({ question: q, data: null }))
+        )
+      );
+      setWeightedResults(res.filter(r => r.data?.results?.length > 0));
+    } catch(e) {
+      setMsg('Erro ao carregar dados.'); setMsgType('err');
     }
+    setLoading(false);
   };
 
-  const downloadExport = (type: 'csv'|'excel'|'json') => {
-    const urls = { csv: exportApi.csv(id), excel: exportApi.excel(id), json: exportApi.json(id) };
-    const token = localStorage.getItem('auth_token');
-    // Download autenticado
-    fetch(urls[type], { headers: { Authorization: `Bearer ${token}` } })
+  useEffect(() => { load(); }, [id]);
+
+  const handleRaking = async () => {
+    setRunning(true); setMsg('');
+    try {
+      const r = await post(`/api/stats/${id}/run-weighting`, {
+        max_iterations: 100, convergence_tol: 0.001, weight_trim_max: 5.0
+      });
+      if (r.error) throw new Error(r.error);
+      setMsg(r.converged ? `✅ Raking convergiu em ${r.iterations_used} iterações!` : `⚠️ Concluído sem convergir — ${r.iterations_used} iterações`);
+      setMsgType(r.converged ? 'ok' : 'err');
+      await load();
+    } catch(e: any) {
+      setMsg(e.message || 'Erro ao executar raking.'); setMsgType('err');
+    }
+    setRunning(false);
+  };
+
+  const downloadExport = (type: string) => {
+    const url = `${API}/api/export/${id}/${type}`;
+    fetch(url, { headers: { Authorization: `Bearer ${tok()}` } })
       .then(r => r.blob())
       .then(blob => {
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
         a.download = `pesquisa_${id.slice(0,8)}.${type === 'excel' ? 'xlsx' : type}`;
         a.click();
-      })
-      .catch(() => toast.error('Erro ao exportar.'));
+      });
   };
 
   if (loading) return (
-    <div className="p-8 flex justify-center items-center min-h-screen">
-      <div className="animate-spin w-8 h-8 border-4 border-brand-600 border-t-transparent rounded-full" />
+    <div style={{ display:'flex', justifyContent:'center', alignItems:'center', minHeight:'100vh' }}>
+      <div style={{ width:36, height:36, border:'4px solid #e5e7eb', borderTopColor:'#4F46E5', borderRadius:'50%', animation:'spin 0.8s linear infinite' }} />
+      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
     </div>
   );
 
-  if (!survey) return <div className="p-8"><p>Pesquisa não encontrada.</p></div>;
-
   const ov = dashboard?.overview || {};
   const lw = dashboard?.last_weighting;
+  const nEff = lw?.summary?.n_effective || ov.completed || 0;
+  const deff = lw?.summary?.design_effect || 1;
+  const moePct = nEff > 0 ? (1.96 * Math.sqrt(0.25 / nEff) * 100) : 0;
 
-  const kpis = [
-    { label: 'Respondentes', value: ov.completed?.toLocaleString('pt-BR') || '0', icon: Users, color: 'text-brand-600 bg-brand-50' },
-    { label: 'Taxa conclusão', value: `${ov.completion_rate || 0}%`, icon: CheckCircle, color: 'text-green-600 bg-green-50' },
-    { label: 'Tempo médio', value: ov.avg_response_time_min ? `${ov.avg_response_time_min} min` : '—', icon: Clock, color: 'text-orange-600 bg-orange-50' },
-    { label: 'Bots detectados', value: ov.suspected_bots || 0, icon: AlertTriangle, color: 'text-red-600 bg-red-50' },
-  ];
-
-  // Agrupar respostas por pergunta/opção para o gráfico
-  const questionCharts = survey.questions?.filter((q: any) =>
-    ['single_choice','multiple_choice'].includes(q.type)
-  ).map((q: any) => {
-    const answers = (dashboard?.demographics || [])
-      .filter(() => true); // simplificado — em prod filtraria por pergunta
-    return { question: q, answers };
-  });
+  const statusColor: any = { active:'#dcfce7', draft:'#fef9c3', closed:'#f3f4f6' };
+  const statusText: any  = { active:'Ativa', draft:'Rascunho', closed:'Encerrada' };
+  const statusFg: any    = { active:'#15803d', draft:'#854d0e', closed:'#374151' };
 
   return (
-    <div className="p-8">
+    <div style={{ padding:32, maxWidth:860, margin:'0 auto' }}>
       {/* Header */}
-      <div className="flex items-center gap-4 mb-6">
-        <button onClick={() => router.back()} className="p-2 text-gray-400 hover:text-gray-700 rounded-lg hover:bg-gray-100">
-          <ArrowLeft className="w-5 h-5" />
-        </button>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-3">
-            <h1 className="text-xl font-bold text-gray-900 truncate">{survey.title}</h1>
-            <span className={`badge ${survey.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>
-              {survey.status === 'active' ? 'Ativa' : survey.status === 'draft' ? 'Rascunho' : 'Encerrada'}
-            </span>
+      <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', marginBottom:24 }}>
+        <div style={{ display:'flex', gap:12, alignItems:'center' }}>
+          <button onClick={()=>router.back()} style={{ padding:'6px 10px', border:'1px solid #e5e7eb', borderRadius:8, background:'white', cursor:'pointer' }}>←</button>
+          <div>
+            <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+              <h1 style={{ fontSize:20, fontWeight:'bold', color:'#111827', margin:0 }}>{survey?.title}</h1>
+              <span style={{ padding:'2px 10px', borderRadius:999, fontSize:12, fontWeight:500,
+                background: statusColor[survey?.status] || '#f3f4f6',
+                color: statusFg[survey?.status] || '#374151' }}>
+                {statusText[survey?.status] || survey?.status}
+              </span>
+            </div>
+            <p style={{ fontSize:12, color:'#9ca3af', margin:'2px 0 0', fontFamily:'monospace' }}>{id}</p>
           </div>
-          <p className="text-gray-500 text-sm font-mono">{id}</p>
         </div>
-        <div className="flex items-center gap-2">
-          <Link href={`/survey/${id}`} target="_blank" className="btn-secondary">
-            <Globe className="w-4 h-4" /> Ver formulário
-          </Link>
-          <Link href={`/admin/surveys/${id}/edit`} className="btn-secondary">
-            <Edit className="w-4 h-4" /> Editar
-          </Link>
+        <div style={{ display:'flex', gap:8 }}>
+          <a href={`/survey/${id}`} target="_blank"
+            style={{ padding:'7px 14px', border:'1px solid #e5e7eb', borderRadius:8, background:'white', cursor:'pointer', fontSize:13, textDecoration:'none', color:'#374151', display:'flex', alignItems:'center', gap:6 }}>
+            🌐 Ver formulário
+          </a>
         </div>
       </div>
 
       {/* Abas */}
-      <div className="flex gap-1 mb-6 bg-gray-100 rounded-xl p-1 w-fit">
-        {(['overview','questions','weighting'] as const).map(tab => (
-          <button key={tab} onClick={() => setActiveTab(tab)}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-              activeTab === tab ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'
-            }`}>
-            {tab === 'overview' ? 'Visão Geral' : tab === 'questions' ? 'Resultados' : 'Ponderação'}
+      <div style={{ display:'flex', gap:4, background:'#f3f4f6', borderRadius:10, padding:4, width:'fit-content', marginBottom:24 }}>
+        {(['overview','results','weighting'] as const).map(t => (
+          <button key={t} onClick={()=>setTab(t)}
+            style={{ padding:'7px 18px', borderRadius:8, fontSize:13, fontWeight:500, cursor:'pointer', border:'none',
+              background: tab===t ? 'white' : 'transparent',
+              color: tab===t ? '#111827' : '#6b7280',
+              boxShadow: tab===t ? '0 1px 3px rgba(0,0,0,0.1)' : 'none' }}>
+            {t==='overview' ? 'Visão Geral' : t==='results' ? 'Resultados' : 'Ponderação'}
           </button>
         ))}
       </div>
 
-      {/* ── Tab: Visão Geral ── */}
-      {activeTab === 'overview' && (
-        <div className="space-y-6">
-          {/* KPIs */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            {kpis.map(({ label, value, icon: Icon, color }) => (
-              <div key={label} className="card p-5">
-                <div className="flex items-center gap-4">
-                  <div className={`w-11 h-11 rounded-xl flex items-center justify-center ${color}`}>
-                    <Icon className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <p className="text-2xl font-bold text-gray-900">{value}</p>
-                    <p className="text-xs text-gray-500">{label}</p>
-                  </div>
-                </div>
-              </div>
-            ))}
+      {msg && (
+        <div style={{ padding:12, borderRadius:8, marginBottom:16, fontSize:13,
+          background: msgType==='ok' ? '#dcfce7' : '#fee2e2',
+          color: msgType==='ok' ? '#15803d' : '#dc2626',
+          border: `1px solid ${msgType==='ok' ? '#86efac' : '#fca5a5'}` }}>
+          {msg}
+        </div>
+      )}
+
+      {/* ── Visão Geral ── */}
+      {tab === 'overview' && (
+        <div>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12, marginBottom:24 }}>
+            <StatCard label="Respondentes" value={ov.completed || 0} sub="respostas completas" />
+            <StatCard label="Taxa conclusão" value={`${ov.completion_rate || 0}%`} sub="das sessões iniciadas" />
+            <StatCard label="Tempo médio" value={ov.avg_response_time_min ? `${ov.avg_response_time_min} min` : '—'} />
+            <StatCard label="Bots detectados" value={ov.suspected_bots || 0} color={ov.suspected_bots > 0 ? '#dc2626' : '#111827'} />
           </div>
 
-          {/* Gráfico de respostas por dia */}
+          {/* Respostas por dia */}
           {dashboard?.responses_by_day?.length > 0 && (
-            <div className="card p-6">
-              <h3 className="font-semibold text-gray-900 mb-4">Respostas por dia</h3>
-              <ResponsiveContainer width="100%" height={200}>
+            <div style={{ background:'white', border:'1px solid #e5e7eb', borderRadius:12, padding:24, marginBottom:16 }}>
+              <p style={{ fontWeight:600, color:'#111827', marginBottom:16, marginTop:0 }}>Respostas por dia</p>
+              <ResponsiveContainer width="100%" height={180}>
                 <LineChart data={dashboard.responses_by_day}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                  <XAxis dataKey="day" tick={{ fontSize: 11 }} />
-                  <YAxis tick={{ fontSize: 11 }} />
+                  <XAxis dataKey="day" tick={{ fontSize:11 }} />
+                  <YAxis tick={{ fontSize:11 }} />
                   <Tooltip />
                   <Line type="monotone" dataKey="count" stroke="#4F46E5" strokeWidth={2} dot={false} />
                 </LineChart>
@@ -169,201 +232,166 @@ export default function SurveyDetailPage() {
             </div>
           )}
 
-          {/* Distribuição demográfica */}
-          {dashboard?.demographics?.length > 0 && (
-            <div className="card p-6">
-              <h3 className="font-semibold text-gray-900 mb-4">Distribuição demográfica</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {Object.entries(
-                  dashboard.demographics.reduce((acc: any, d: any) => {
-                    if (!acc[d.demographic_key]) acc[d.demographic_key] = [];
-                    acc[d.demographic_key].push({ name: d.category, value: parseInt(d.count) });
-                    return acc;
-                  }, {})
-                ).map(([key, data]: any) => (
-                  <div key={key}>
-                    <p className="text-sm font-medium text-gray-700 capitalize mb-2">{key.replace('_', ' ')}</p>
-                    <ResponsiveContainer width="100%" height={160}>
-                      <BarChart data={data} layout="vertical">
-                        <XAxis type="number" tick={{ fontSize: 10 }} />
-                        <YAxis type="category" dataKey="name" tick={{ fontSize: 10 }} width={80} />
-                        <Tooltip />
-                        <Bar dataKey="value" radius={[0, 4, 4, 0]}>
-                          {data.map((_: any, i: number) => (
-                            <Cell key={i} fill={COLORS[i % COLORS.length]} />
-                          ))}
-                        </Bar>
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
           {/* Exportação */}
-          <div className="card p-6">
-            <h3 className="font-semibold text-gray-900 mb-4">Exportar dados</h3>
-            <div className="flex gap-3">
-              <button onClick={() => downloadExport('csv')} className="btn-secondary">
-                <FileText className="w-4 h-4" /> CSV
-              </button>
-              <button onClick={() => downloadExport('excel')} className="btn-secondary">
-                <Table className="w-4 h-4" /> Excel
-              </button>
-              <button onClick={() => downloadExport('json')} className="btn-secondary">
-                <FileJson className="w-4 h-4" /> JSON
-              </button>
+          <div style={{ background:'white', border:'1px solid #e5e7eb', borderRadius:12, padding:24 }}>
+            <p style={{ fontWeight:600, color:'#111827', marginBottom:16, marginTop:0 }}>Exportar dados</p>
+            <div style={{ display:'flex', gap:10 }}>
+              {[['csv','📄 CSV'],['excel','📊 Excel'],['json','📋 JSON']].map(([type, label]) => (
+                <button key={type} onClick={()=>downloadExport(type)}
+                  style={{ padding:'8px 16px', border:'1px solid #e5e7eb', borderRadius:8, background:'white', cursor:'pointer', fontSize:13 }}>
+                  {label}
+                </button>
+              ))}
             </div>
           </div>
         </div>
       )}
 
-      {/* ── Tab: Resultados ── */}
-      {activeTab === 'questions' && (
-        <div className="space-y-4">
-          {survey.questions?.length === 0 ? (
-            <div className="card p-12 text-center">
-              <p className="text-gray-500">Nenhuma pergunta cadastrada.</p>
+      {/* ── Resultados Ponderados ── */}
+      {tab === 'results' && (
+        <div>
+          {!lw && (
+            <div style={{ padding:14, background:'#fef9c3', border:'1px solid #fde047', borderRadius:8, marginBottom:20, fontSize:13, color:'#854d0e' }}>
+              ⚠️ Raking ainda não executado — vá na aba <strong>Ponderação</strong> e clique em <strong>Executar Raking</strong> para ponderar os resultados.
+            </div>
+          )}
+
+          {/* KPIs de qualidade */}
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:12, marginBottom:24 }}>
+            <StatCard label="N efetivo" value={nEff > 0 ? String(nEff) : '—'} sub={lw ? `DEFF: ${deff.toFixed(2)}` : 'execute o raking'} />
+            <StatCard label="Margem de erro" value={moePct > 0 ? `±${moePct.toFixed(1)}%` : '—'} sub="IC 95% · pior caso" color={moePct > 5 ? '#dc2626' : '#16a34a'} />
+            <StatCard label="Status" value={lw ? (lw.converged ? '✅ Convergiu' : '⚠️ Não convergiu') : 'Pendente'}
+              sub={lw ? `${lw.iterations_used} iterações` : ''} />
+          </div>
+
+          {weightedResults.length === 0 ? (
+            <div style={{ textAlign:'center', padding:48, border:'2px dashed #e5e7eb', borderRadius:12 }}>
+              <p style={{ color:'#9ca3af', fontSize:14, margin:0 }}>
+                Nenhum resultado disponível.<br/>Aguarde respostas e execute o raking.
+              </p>
             </div>
           ) : (
-            survey.questions?.map((q: any, i: number) => (
-              <div key={q.id} className="card p-6">
-                <div className="flex items-start gap-3 mb-4">
-                  <span className="text-xs font-bold text-gray-400 bg-gray-100 rounded-full w-6 h-6 flex items-center justify-center flex-shrink-0 mt-0.5">
-                    {i + 1}
-                  </span>
-                  <div>
-                    <p className="font-medium text-gray-900">{q.text}</p>
-                    <span className="text-xs text-gray-400 capitalize">{q.type?.replace('_',' ')}</span>
+            weightedResults.map(({ question, data }) => {
+              const items = data?.results || [];
+              const nEffQ = data?.n_effective || nEff;
+              const total = items.reduce((s: number, i: any) => s + parseInt(i.raw_count||0), 0);
+
+              const withMoe = items.map((item: any) => {
+                const p = parseFloat(item.weighted_proportion) || 0;
+                const moe = nEffQ > 0 ? (1.96 * Math.sqrt(Math.max(p*(1-p),0.0001) / nEffQ) * 100) : 0;
+                const rawPct = total > 0 ? (parseInt(item.raw_count||0) / total * 100) : 0;
+                return { ...item, moe, pct: p * 100, rawPct };
+              }).sort((a: any, b: any) => b.pct - a.pct);
+
+              return (
+                <div key={question.id}
+                  style={{ background:'white', border:'1px solid #e5e7eb', borderRadius:12, padding:24, marginBottom:20 }}>
+                  <div style={{ marginBottom:20 }}>
+                    <p style={{ fontWeight:600, color:'#111827', fontSize:16, margin:'0 0 4px' }}>{question.text}</p>
+                    <div style={{ display:'flex', gap:16, fontSize:12, color:'#9ca3af' }}>
+                      <span>N = {total} respostas</span>
+                      {nEffQ > 0 && <span>N efetivo = {nEffQ}</span>}
+                    </div>
+                  </div>
+
+                  <p style={{ fontSize:12, color:'#6b7280', marginBottom:12 }}>
+                    Barra colorida = ponderado · Barra cinza = bruto (sem raking)
+                  </p>
+
+                  {withMoe.map((item: any, i: number) => (
+                    <CandidateBar
+                      key={item.choice}
+                      rank={i + 1}
+                      label={item.choice || '(sem resposta)'}
+                      pct={item.pct}
+                      rawPct={item.rawPct}
+                      moe={item.moe}
+                      color={COLORS[i % COLORS.length]}
+                    />
+                  ))}
+
+                  <div style={{ marginTop:12, paddingTop:10, borderTop:'1px solid #f3f4f6', fontSize:11, color:'#9ca3af' }}>
+                    {lw ? `Ponderado via Raking IPF · ${lw.iterations_used} iterações · DEFF ${deff.toFixed(2)} · IC 95%`
+                        : 'Resultado bruto — execute o raking para ponderar'}
                   </div>
                 </div>
-                {q.options && (
-                  <div className="space-y-2">
-                    {q.options.map((opt: any) => (
-                      <div key={opt.value} className="flex items-center gap-3">
-                        <div className="w-24 text-xs text-gray-600 truncate">{opt.label}</div>
-                        <div className="flex-1 bg-gray-100 rounded-full h-2">
-                          <div className="bg-brand-500 h-2 rounded-full" style={{ width: '40%' }} />
-                        </div>
-                        <span className="text-xs font-medium text-gray-600 w-10 text-right">—</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))
+              );
+            })
           )}
         </div>
       )}
 
-      {/* ── Tab: Ponderação ── */}
-      {activeTab === 'weighting' && (
-        <div className="space-y-6">
+      {/* ── Ponderação ── */}
+      {tab === 'weighting' && (
+        <div>
           {/* Executar raking */}
-          <div className="card p-6">
-            <div className="flex items-start justify-between">
+          <div style={{ background:'white', border:'1px solid #e5e7eb', borderRadius:12, padding:24, marginBottom:16 }}>
+            <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between' }}>
               <div>
-                <h3 className="font-semibold text-gray-900">Algoritmo de Raking (IPF)</h3>
-                <p className="text-sm text-gray-500 mt-1">
-                  Ajusta automaticamente os pesos dos respondentes para refletir
-                  a distribuição real da população.
+                <p style={{ fontWeight:600, color:'#111827', margin:'0 0 4px' }}>Algoritmo de Raking (IPF)</p>
+                <p style={{ fontSize:13, color:'#6b7280', margin:0 }}>
+                  Ajusta automaticamente os pesos dos respondentes para refletir a distribuição real da população.
                 </p>
               </div>
-              <button onClick={handleRunWeighting} disabled={runningWeight} className="btn-primary">
-                {runningWeight
-                  ? <><RefreshCw className="w-4 h-4 animate-spin" /> Calculando...</>
-                  : <><Play className="w-4 h-4" /> Executar Raking</>
-                }
+              <button onClick={handleRaking} disabled={running}
+                style={{ padding:'8px 18px', background: running?'#818cf8':'#4F46E5', color:'white', border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:500, whiteSpace:'nowrap', marginLeft:16 }}>
+                {running ? '⟳ Calculando...' : '⚖️ Executar Raking'}
               </button>
             </div>
 
             {lw && (
-              <div className="mt-4 p-4 bg-gray-50 rounded-lg grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div>
-                  <p className="text-xs text-gray-500">N efetivo</p>
-                  <p className="font-bold text-gray-900">{lw.summary?.n_effective?.toLocaleString() || '—'}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-gray-500">Design Effect</p>
-                  <p className="font-bold text-gray-900">{lw.summary?.design_effect?.toFixed(3) || '—'}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-gray-500">Iterações</p>
-                  <p className="font-bold text-gray-900">{lw.iterations_used}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-gray-500">Convergiu?</p>
-                  <p className={`font-bold ${lw.converged ? 'text-green-600' : 'text-orange-600'}`}>
-                    {lw.converged ? 'Sim ✓' : 'Não ⚠'}
-                  </p>
-                </div>
-                {lw.summary?.weight_stats && (
-                  <>
-                    <div>
-                      <p className="text-xs text-gray-500">Peso mínimo</p>
-                      <p className="font-bold text-gray-900">{lw.summary.weight_stats.min?.toFixed(3)}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-gray-500">Peso máximo</p>
-                      <p className="font-bold text-gray-900">{lw.summary.weight_stats.max?.toFixed(3)}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-gray-500">Peso médio</p>
-                      <p className="font-bold text-gray-900">{lw.summary.weight_stats.mean?.toFixed(3)}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-gray-500">Pesos cortados</p>
-                      <p className="font-bold text-gray-900">{lw.summary.trimmed_count}</p>
-                    </div>
-                  </>
-                )}
+              <div style={{ marginTop:16, padding:14, background:'#f8fafc', borderRadius:8, display:'flex', gap:24, flexWrap:'wrap' }}>
+                {[
+                  ['N efetivo', lw.summary?.n_effective],
+                  ['Design Effect', lw.summary?.design_effect?.toFixed(3)],
+                  ['Iterações', lw.iterations_used],
+                  ['Convergiu', lw.converged ? 'Sim ✓' : 'Não ⚠'],
+                  ['Peso mín.', lw.summary?.weight_stats?.min?.toFixed(3)],
+                  ['Peso máx.', lw.summary?.weight_stats?.max?.toFixed(3)],
+                  ['Peso médio', lw.summary?.weight_stats?.mean?.toFixed(3)],
+                  ['Pesos cortados', lw.summary?.trimmed_count],
+                ].map(([label, value]) => (
+                  <div key={label as string}>
+                    <span style={{ fontSize:11, color:'#64748b', display:'block' }}>{label}</span>
+                    <span style={{ fontWeight:600, color:'#1e293b' }}>{value ?? '—'}</span>
+                  </div>
+                ))}
               </div>
             )}
           </div>
 
           {/* Alvos populacionais */}
-          <div className="card p-6">
-            <h3 className="font-semibold text-gray-900 mb-1">Alvos populacionais</h3>
-            <p className="text-sm text-gray-500 mb-4">
-              Proporções da população usadas como referência para o raking.
-            </p>
-            {survey.population_targets?.length === 0 ? (
-              <div className="p-8 text-center border-2 border-dashed border-gray-200 rounded-lg">
-                <BarChart3 className="w-8 h-8 text-gray-300 mx-auto mb-2" />
-                <p className="text-sm text-gray-500">Nenhum alvo definido.</p>
-                <p className="text-xs text-gray-400 mt-1">
-                  Use a rota <code className="bg-gray-100 px-1 rounded">POST /api/surveys/{'{id}'}/population-targets</code> para configurar.
-                </p>
+          <div style={{ background:'white', border:'1px solid #e5e7eb', borderRadius:12, padding:24 }}>
+            <p style={{ fontWeight:600, color:'#111827', margin:'0 0 4px' }}>Alvos populacionais</p>
+            <p style={{ fontSize:13, color:'#6b7280', margin:'0 0 16px' }}>Proporções da população usadas como referência para o raking.</p>
+
+            {!survey?.population_targets?.length ? (
+              <div style={{ textAlign:'center', padding:32, border:'2px dashed #e5e7eb', borderRadius:8 }}>
+                <p style={{ color:'#9ca3af', fontSize:13, margin:0 }}>Nenhum alvo definido. Configure ao criar a pesquisa.</p>
               </div>
             ) : (
-              <div className="space-y-3">
-                {Object.entries(
-                  (survey.population_targets || []).reduce((acc: any, t: any) => {
-                    if (!acc[t.dimension]) acc[t.dimension] = [];
-                    acc[t.dimension].push(t);
-                    return acc;
-                  }, {})
-                ).map(([dim, targets]: any) => (
-                  <div key={dim}>
-                    <p className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">{dim}</p>
-                    <div className="space-y-1.5">
-                      {targets.map((t: any) => (
-                        <div key={t.category} className="flex items-center gap-3">
-                          <span className="text-sm text-gray-700 w-28">{t.category}</span>
-                          <div className="flex-1 bg-gray-100 rounded-full h-1.5">
-                            <div className="bg-brand-500 h-1.5 rounded-full"
-                              style={{ width: `${(parseFloat(t.proportion) * 100).toFixed(1)}%` }} />
-                          </div>
-                          <span className="text-sm font-medium text-gray-600 w-12 text-right">
-                            {(parseFloat(t.proportion) * 100).toFixed(1)}%
-                          </span>
-                        </div>
-                      ))}
+              Object.entries(
+                (survey.population_targets || []).reduce((acc: any, t: any) => {
+                  if (!acc[t.dimension]) acc[t.dimension] = [];
+                  acc[t.dimension].push(t);
+                  return acc;
+                }, {})
+              ).map(([dim, targets]: any) => (
+                <div key={dim} style={{ marginBottom:20 }}>
+                  <p style={{ fontSize:12, fontWeight:600, color:'#6b7280', textTransform:'uppercase', letterSpacing:1, margin:'0 0 10px' }}>{dim}</p>
+                  {targets.map((t: any) => (
+                    <div key={t.category} style={{ display:'flex', alignItems:'center', gap:12, marginBottom:8 }}>
+                      <span style={{ fontSize:13, color:'#374151', width:160 }}>{t.category}</span>
+                      <div style={{ flex:1, background:'#f3f4f6', borderRadius:4, height:8 }}>
+                        <div style={{ width:`${(parseFloat(t.proportion)*100).toFixed(1)}%`, background:'#4F46E5', height:8, borderRadius:4 }} />
+                      </div>
+                      <span style={{ fontSize:13, fontWeight:500, color:'#374151', width:48, textAlign:'right' }}>
+                        {(parseFloat(t.proportion)*100).toFixed(1)}%
+                      </span>
                     </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              ))
             )}
           </div>
         </div>
